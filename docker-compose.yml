@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  qa-service:
+    build: .
+    container_name: aurora-qa-service
+    ports:
+      - "8000:8000"
+    environment:
+      - MESSAGES_API_URL=${MESSAGES_API_URL:-https://november7-730026606190.europe-west1.run.app/messages/}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-all-MiniLM-L6-v2}
+      - TOP_K_MESSAGES=${TOP_K_MESSAGES:-5}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./app:/app/app
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
