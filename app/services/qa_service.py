@@ -3,7 +3,7 @@
 from typing import List, Tuple
 from app.models import Message
 from app.services.message_service import MessageService
-from app.services.embedding_service import EmbeddingService
+from app.services.hybrid_search_service import HybridSearchService
 from app.services.llm_service import LLMService
 from app.utils.logger import get_logger
 
@@ -15,7 +15,7 @@ class QAService:
     
     def __init__(self):
         self.message_service = MessageService()
-        self.embedding_service = EmbeddingService()
+        self.hybrid_search_service = HybridSearchService()
         self.llm_service = LLMService()
     
     async def answer_question(self, question: str) -> Tuple[str, List[str]]:
@@ -50,9 +50,9 @@ class QAService:
                 for msg in messages
             ]
             
-            # Step 3: Retrieve relevant messages using semantic search
-            logger.info("Step 3/4: Finding relevant messages using semantic search...")
-            relevant_messages = self.embedding_service.retrieve_relevant_messages(
+            # Step 3: Retrieve relevant messages using hybrid search
+            logger.info("Step 3/4: Finding relevant messages using hybrid search...")
+            relevant_messages = self.hybrid_search_service.retrieve_relevant_messages(
                 question=question,
                 messages=messages,
                 message_texts=message_texts

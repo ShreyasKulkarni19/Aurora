@@ -47,6 +47,28 @@ class Settings(BaseSettings):
         description="Number of top relevant messages to retrieve"
     )
     
+    # Hybrid Search Configuration
+    embedding_weight: float = Field(
+        default=0.7,
+        description="Weight for embedding scores in hybrid search (0.0 to 1.0)"
+    )
+    keyword_weight: float = Field(
+        default=0.3,
+        description="Weight for keyword scores in hybrid search (0.0 to 1.0)"
+    )
+    min_keyword_matches: int = Field(
+        default=1,
+        description="Minimum number of keyword matches required for relevance"
+    )
+    use_stemming: bool = Field(
+        default=True,
+        description="Whether to use stemming for keyword matching"
+    )
+    case_sensitive: bool = Field(
+        default=False,
+        description="Whether keyword matching should be case sensitive"
+    )
+    
     # LLM Configuration
     llm_provider: str = Field(
         default="openai",
