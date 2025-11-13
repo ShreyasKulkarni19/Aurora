@@ -43,7 +43,7 @@ class Settings(BaseSettings):
         description="Device for embedding model (cpu/cuda)"
     )
     top_k_messages: int = Field(
-        default=5,
+        default=50,
         description="Number of top relevant messages to retrieve"
     )
     
@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     )
     use_stemming: bool = Field(
         default=True,
-        description="Whether to use stemming for keyword matching"
+        description="Whether to use stemming for keyword matching"  
     )
     case_sensitive: bool = Field(
         default=False,
