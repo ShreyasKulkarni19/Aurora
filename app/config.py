@@ -69,6 +69,16 @@ class Settings(BaseSettings):
         description="Whether keyword matching should be case sensitive"
     )
     
+    # Cache Configuration
+    embedding_cache_ttl_hours: int = Field(
+        default=24,
+        description="Time-to-live for embedding cache in hours"
+    )
+    message_cache_ttl_minutes: int = Field(
+        default=5,
+        description="Time-to-live for message cache in minutes"
+    )
+    
     # LLM Configuration
     llm_provider: str = Field(
         default="openai",

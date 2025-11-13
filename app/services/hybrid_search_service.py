@@ -1,9 +1,14 @@
 """Service for hybrid search combining embedding and keyword matching."""
 
 import re
+import os
+import pickle
+import hashlib
 import numpy as np
-from typing import List, Tuple, Dict, Set
+from typing import List, Tuple, Dict, Set, Optional
 from collections import Counter
+from pathlib import Path
+from datetime import datetime, timedelta
 from app.models import Message
 from app.services.embedding_service import EmbeddingService
 from app.config import settings
@@ -11,6 +16,10 @@ from app.utils.exceptions import EmbeddingError
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Cache configuration
+EMBEDDING_CACHE_DIR = Path(".cache")
+EMBEDDING_CACHE_FILE = EMBEDDING_CACHE_DIR / "embeddings_cache.pkl"
 
 
 class HybridSearchService:
@@ -29,12 +38,137 @@ class HybridSearchService:
         self.use_stemming = getattr(settings, 'use_stemming', True)
         self.case_sensitive = getattr(settings, 'case_sensitive', False)
         
+        # Embedding cache
+        self._cached_embeddings: Optional[np.ndarray] = None
+        self._cached_message_hashes: Optional[List[str]] = None
+        self._cache_timestamp: Optional[datetime] = None
+        self._cache_ttl = timedelta(hours=getattr(settings, 'embedding_cache_ttl_hours', 24))
+        
+        # Load cached embeddings if available
+        self._load_embedding_cache()
+        
         logger.info(
             "Initialized hybrid search",
             embedding_weight=self.embedding_weight,
             keyword_weight=self.keyword_weight,
-            min_keyword_matches=self.min_keyword_matches
+            min_keyword_matches=self.min_keyword_matches,
+            embeddings_cached=self._cached_embeddings is not None
         )
+    
+    def _generate_message_hash(self, message_text: str) -> str:
+        """Generate a hash for a message to detect changes."""
+        return hashlib.md5(message_text.encode('utf-8')).hexdigest()
+    
+    def _load_embedding_cache(self) -> None:
+        """Load cached embeddings from disk if available and valid."""
+        try:
+            if EMBEDDING_CACHE_FILE.exists():
+                with open(EMBEDDING_CACHE_FILE, 'rb') as f:
+                    cache_data = pickle.load(f)
+                
+                cache_timestamp = datetime.fromisoformat(cache_data['timestamp'])
+                cache_age = datetime.now() - cache_timestamp
+                
+                if cache_age < self._cache_ttl:
+                    self._cached_embeddings = cache_data['embeddings']
+                    self._cached_message_hashes = cache_data['message_hashes']
+                    self._cache_timestamp = cache_timestamp
+                    
+                    logger.info(
+                        f"Loaded embeddings cache with {self._cached_embeddings.shape[0]} embeddings "
+                        f"(age: {cache_age.total_seconds():.0f}s)"
+                    )
+                else:
+                    logger.debug(f"Embedding cache expired (age: {cache_age.total_seconds():.0f}s)")
+        except Exception as e:
+            logger.warning(f"Failed to load embedding cache: {e}")
+            self._cached_embeddings = None
+            self._cached_message_hashes = None
+    
+    def _save_embedding_cache(
+        self, 
+        embeddings: np.ndarray, 
+        message_hashes: List[str]
+    ) -> None:
+        """Save embeddings to disk cache for faster future access."""
+        try:
+            # Create cache directory if it doesn't exist
+            EMBEDDING_CACHE_DIR.mkdir(exist_ok=True)
+            
+            cache_data = {
+                'timestamp': datetime.now().isoformat(),
+                'embeddings': embeddings,
+                'message_hashes': message_hashes,
+                'model_name': self.embedding_service.model_name,
+                'embedding_dim': embeddings.shape[1] if len(embeddings.shape) > 1 else 0
+            }
+            
+            with open(EMBEDDING_CACHE_FILE, 'wb') as f:
+                pickle.dump(cache_data, f)
+            
+            logger.info(f"Saved embeddings cache with {len(embeddings)} embeddings")
+        except Exception as e:
+            logger.warning(f"Failed to save embedding cache: {e}")
+    
+    def _get_or_compute_embeddings(
+        self, 
+        message_texts: List[str]
+    ) -> np.ndarray:
+        """Get embeddings from cache or compute them if needed."""
+        # Generate hashes for current messages
+        current_hashes = [self._generate_message_hash(text) for text in message_texts]
+        
+        # Check if we can use cached embeddings
+        cache_valid = (
+            self._cached_embeddings is not None and 
+            self._cached_message_hashes is not None and
+            len(current_hashes) == len(self._cached_message_hashes) and
+            current_hashes == self._cached_message_hashes
+        )
+        
+        if cache_valid:
+            logger.info(
+                f"Using cached embeddings for {len(message_texts)} messages "
+                f"(saved ~{len(message_texts) * 0.5:.0f}s processing time)"
+            )
+            return self._cached_embeddings
+        
+        # Cache is invalid - detect why
+        if self._cached_embeddings is not None:
+            if len(current_hashes) != len(self._cached_message_hashes or []):
+                logger.info(
+                    f"Message count changed: {len(self._cached_message_hashes or [])} → {len(current_hashes)}. "
+                    "Recomputing embeddings..."
+                )
+            else:
+                logger.info(
+                    "Message content changed. Recomputing embeddings..."
+                )
+        
+        # Need to compute embeddings
+        logger.info(
+            f"Computing embeddings for {len(message_texts)} messages "
+            "(this will be cached for future use)..."
+        )
+        
+        embeddings = self.embedding_service.model.encode(
+            message_texts,
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+            show_progress_bar=True,
+            batch_size=32
+        )
+        
+        # Cache the results
+        self._cached_embeddings = embeddings
+        self._cached_message_hashes = current_hashes
+        self._cache_timestamp = datetime.now()
+        
+        # Save to disk
+        self._save_embedding_cache(embeddings, current_hashes)
+        
+        logger.info("Embeddings computed and cached successfully")
+        return embeddings
     
     def _extract_keywords(self, text: str) -> Set[str]:
         """
@@ -224,14 +358,8 @@ class HybridSearchService:
             logger.info("Step 1/3: Computing embedding similarities...")
             query_embedding = self.embedding_service.generate_embedding(question)
             
-            # Generate embeddings for all messages
-            message_embeddings = self.embedding_service.model.encode(
-                message_texts,
-                convert_to_numpy=True,
-                normalize_embeddings=True,
-                show_progress_bar=True,
-                batch_size=32
-            )
+            # Generate or retrieve cached embeddings for all messages
+            message_embeddings = self._get_or_compute_embeddings(message_texts)
             
             # Compute embedding similarities
             embedding_scores = self.embedding_service.compute_similarity(

@@ -121,3 +121,73 @@ async def health_check():
     """Health check endpoint."""
     return {"status": "healthy", "service": "aurora-qa-service"}
 
+
+@router.post(
+    "/refresh-cache",
+    summary="Refresh cache",
+    description="Force refresh both message and embedding caches"
+)
+async def refresh_cache():
+    """
+    Force refresh all caches.
+    
+    This endpoint will:
+    1. Clear the message cache and fetch fresh messages
+    2. Clear the embedding cache and recompute embeddings
+    
+    Use this when you know new data has been added to the messages API.
+    """
+    if not qa_service:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="QA service not initialized"
+        )
+    
+    try:
+        logger.info("Manual cache refresh requested")
+        
+        # Force refresh messages (this will also trigger embedding refresh)
+        messages = await qa_service.message_service.fetch_all_messages(force_refresh=True)
+        
+        # Clear embedding cache to force recomputation
+        if hasattr(qa_service.hybrid_search_service, '_cached_embeddings'):
+            qa_service.hybrid_search_service._cached_embeddings = None
+            qa_service.hybrid_search_service._cached_message_hashes = None
+            qa_service.hybrid_search_service._cache_timestamp = None
+        
+        # Also clear disk cache
+        import os
+        from pathlib import Path
+        
+        cache_files = [
+            Path(".cache/embeddings_cache.pkl"),
+            Path(".cache/messages_cache.json")
+        ]
+        
+        cleared_files = []
+        for cache_file in cache_files:
+            if cache_file.exists():
+                os.remove(cache_file)
+                cleared_files.append(str(cache_file))
+        
+        logger.info(
+            "Cache refresh completed",
+            message_count=len(messages),
+            cleared_files=cleared_files
+        )
+        
+        return {
+            "status": "success",
+            "message": "Cache refreshed successfully",
+            "message_count": len(messages),
+            "cleared_files": cleared_files,
+            "note": "Next query will rebuild embeddings cache"
+        }
+        
+    except Exception as e:
+        logger.error("Cache refresh failed", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Cache refresh failed: {str(e)}"
+        )
+
