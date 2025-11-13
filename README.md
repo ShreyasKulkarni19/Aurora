@@ -2,7 +2,183 @@
 
 A production-grade Question Answering API service that uses Retrieval-Augmented Generation (RAG) to answer natural language questions based on member messages.
 
-## Features
+## Approach Considerations & Design Decisions
+
+When building this question-answering system, I evaluated several architectural approaches to ensure the best balance of accuracy, performance, and maintainability.
+
+### Alternative Approaches Considered
+
+#### 1. **Fine-tuned Language Model**
+
+**Approach**: Train a specialized LLM on the member messages dataset.
+
+**Pros**:
+
+- High accuracy for domain-specific queries
+- No need for retrieval pipeline
+- Potentially faster inference once trained
+
+**Cons**:
+
+- Requires large datasets (thousands of examples)
+- Expensive training process (GPU resources, time)
+- Limited to training data cutoff (can't handle new messages without retraining)
+- Risk of hallucination with outdated information
+- Complex model versioning and deployment
+
+#### 2. **Semantic Search Only (No LLM)**
+
+**Approach**: Use only embedding similarity to return the most relevant messages.
+
+**Pros**:
+
+- Simple implementation
+- Fast response times
+- No API costs for LLM inference
+- Always returns actual message content
+
+**Cons**:
+
+- No natural language answer generation
+- Poor user experience (raw message snippets)
+- Inability to synthesize information across multiple messages
+- Limited reasoning capabilities
+
+#### 3. **Traditional Keyword Search (Elasticsearch/Solr)**
+
+**Approach**: Use inverted index-based search engines with TF-IDF scoring.
+
+**Pros**:
+
+- Excellent keyword matching precision
+- Fast query performance
+- Battle-tested technology
+- Good for exact phrase matching
+
+**Cons**:
+
+- Poor handling of semantic similarity
+- Struggles with synonyms and paraphrasing
+- No understanding of context or intent
+- Requires extensive query optimization
+
+#### 4. **Hybrid: Knowledge Graph + RAG**
+
+**Approach**: Extract entities and relationships to build a knowledge graph, then combine with RAG.
+
+**Pros**:
+
+- Rich relationship understanding
+- Excellent for complex reasoning queries
+- Handles entity disambiguation well
+- Supports logical inference
+
+**Cons**:
+
+- Complex implementation and maintenance
+- Requires domain expertise for ontology design
+- High computational overhead for graph traversal
+- Entity extraction accuracy challenges
+
+### **Chosen Approach: Hybrid Search + RAG**
+
+I selected a **hybrid semantic-keyword search combined with RAG** for the following reasons:
+
+#### **Why This Approach Works Best**
+
+1. **Balanced Precision & Recall**: Semantic embeddings capture intent while keyword matching ensures exact term relevance
+2. **Practical Implementation**: Leverages proven technologies (sentence transformers + OpenAI) without complex infrastructure
+3. **Cost Effective**: Reasonable balance between accuracy and API costs
+4. **Maintainable**: Clean architecture with separation of concerns
+5. **Extensible**: Easy to swap LLM providers or add new retrieval methods
+
+#### **Key Technical Decisions**
+
+- **70% Embedding Weight / 30% Keyword Weight**: Optimized through experimentation
+- **Top-50 Message Retrieval**: Ensures comprehensive coverage for "list all" type questions
+- **Caching Strategy**: 24-hour embedding cache + 5-minute message cache for performance
+- **all-MiniLM-L6-v2**: Balanced model for speed vs accuracy trade-offs
+
+### **Future Enhancement: Knowledge-Based RAG**
+
+Given additional resources and time, I would implement **Knowledge-Based RAG** to significantly enhance the system:
+
+#### **Proposed Architecture**
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                Knowledge-Enhanced RAG                    │
+│                                                         │
+│  ┌─────────────┐    ┌──────────────┐    ┌─────────────┐ │
+│  │   Entity    │    │  Relation    │    │  Temporal   │ │
+│  │ Extraction  │    │ Extraction   │    │ Reasoning   │ │
+│  │  (NER+REL)  │    │ (OpenIE/RE)  │    │ (TimeGraph) │ │
+│  └─────┬───────┘    └───────┬──────┘    └──────┬──────┘ │
+│        │                    │                  │        │
+│        └────────────────────┼──────────────────┘        │
+│                             │                           │
+│  ┌─────────────────────────▼─────────────────────────┐  │
+│  │            Knowledge Graph                        │  │
+│  │    (Neo4j/ArangoDB with Rich Ontology)           │  │
+│  └─────────────────────┬───────────────────────────┘  │
+│                        │                             │
+│  ┌────────────────────▼──────────────────────────┐   │
+│  │        Multi-Modal Retrieval                  │   │
+│  │  • Graph Traversal (Cypher Queries)          │   │
+│  │  • Vector Similarity (Current Method)        │   │
+│  │  • Structured Queries (SQL-like)             │   │
+│  └─────────────────┬─────────────────────────────┘   │
+│                    │                                 │
+│  ┌────────────────▼─────────────────────────────┐   │
+│  │         Context-Aware LLM                    │   │
+│  │  • Structured prompts with graph context     │   │
+│  │  • Multi-hop reasoning capabilities          │   │
+│  │  • Confidence scoring for answers            │   │
+│  └───────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────┘
+```
+
+#### **Implementation Plan**
+
+**Phase 1: Entity & Relationship Extraction**
+
+- Deploy spaCy/Stanza for Named Entity Recognition
+- Implement OpenIE for relationship extraction
+- Build entity disambiguation pipeline
+- Create initial knowledge schema
+
+**Phase 2: Knowledge Graph Construction**
+
+- Set up Neo4j/ArangoDB infrastructure
+- Design domain-specific ontology (Person, Location, Event, etc.)
+- Implement automated graph population pipeline
+- Build graph validation and quality metrics
+
+**Phase 3: Enhanced Retrieval**
+
+- Develop graph traversal algorithms for complex queries
+- Implement multi-hop reasoning paths
+- Build hybrid retrieval combining graph + vector search
+- Create query planning and optimization
+
+**Phase 4: Advanced Reasoning**
+
+- Implement temporal reasoning for time-based queries
+- Add graph-aware prompt engineering for LLMs
+- Build confidence scoring and answer verification
+- Create explanation generation for reasoning paths
+
+#### **Expected Benefits**
+
+1. **Complex Query Handling**: "Who knows someone in Paris who can help with restaurant recommendations?"
+2. **Temporal Reasoning**: "What was discussed about the London trip before the hotel booking?"
+3. **Relationship Inference**: "Find people who have traveled together in the past"
+4. **Disambiguation**: Distinguish between multiple people with similar names using context
+5. **Explainable Answers**: Provide reasoning paths for complex answers
+
+## This knowledge-based approach would transform Aurora from a document search system into an intelligent reasoning engine capable of understanding complex relationships and temporal patterns within member communications.
+
+## Current Features
 
 - **RAG Pipeline**: Combines semantic retrieval with LLM-based answer generation
 - **Semantic Search**: Uses sentence transformers for embedding-based message retrieval
