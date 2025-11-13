@@ -97,7 +97,7 @@ class Settings(BaseSettings):
         description="Temperature for LLM generation"
     )
     openai_max_tokens: int = Field(
-        default=200,
+        default=300,
         description="Maximum tokens for LLM response"
     )
     

@@ -27,6 +27,11 @@ class QuestionRequest(BaseModel):
 class AnswerResponse(BaseModel):
     """Response model for the QA endpoint."""
     answer: str = Field(..., description="Answer to the question")
+
+
+class DetailedAnswerResponse(BaseModel):
+    """Detailed response model for the QA endpoint with sources."""
+    answer: str = Field(..., description="Answer to the question")
     sources: Optional[List[str]] = Field(
         default=None,
         description="Source message IDs used for the answer"

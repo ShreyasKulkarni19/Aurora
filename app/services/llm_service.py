@@ -65,13 +65,18 @@ class LLMService:
         prompt_parts.extend([
             "",
             "Instructions:",
-            "1. Extract the specific answer from the messages above.",
-            "2. If multiple answers exist, provide the most relevant or primary answer only.",
-            "3. If the answer is not found, respond with 'I could not find an answer to this question in the available messages.'",
-            "4. Be concise and direct. Provide ONE definitive answer as a string, not a list.",
-            "5. Return your response as a JSON object with a single 'answer' field containing a string value.",
+            "1. Analyze all the messages above to extract relevant information.",
+            "2. If there are multiple people/entities that match the question, list them all.",
+            "3. For questions asking 'who', provide all relevant names if multiple people are found.",
+            "4. Be comprehensive - don't limit to just one answer if multiple valid answers exist.",
+            "5. If no answer is found, respond with 'I could not find an answer to this question in the available messages.'",
+            "6. Return your response as a JSON object with a single 'answer' field containing a string value.",
+            "7. If multiple answers exist, format them clearly (e.g., 'Person A, Person B, and Person C').",
             "",
-            "Example format: {\"answer\": \"Sophia Al-Farsi\"}",
+            "Example formats:",
+            "Single answer: {\"answer\": \"Sophia Al-Farsi\"}",
+            "Multiple answers: {\"answer\": \"Sophia Al-Farsi, Marco Rodriguez, and Elena Chen\"}",
+            "List format: {\"answer\": \"The following people are planning trips: Sophia Al-Farsi, Marco Rodriguez, and Elena Chen\"}",
             "",
             "Response (JSON only):"
         ])
@@ -128,7 +133,7 @@ class LLMService:
                     "messages": [
                         {
                             "role": "system",
-                            "content": "You are a helpful assistant that answers questions based on provided data. Always respond with valid JSON containing an 'answer' field."
+                            "content": "You are a helpful assistant that answers questions based on provided data. When multiple people or entities match the question, list all of them. Always respond with valid JSON containing an 'answer' field."
                         },
                         {
                             "role": "user",

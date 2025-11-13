@@ -66,10 +66,7 @@ async def ask_question(
     try:
         answer, source_ids = await qa_service.answer_question(question)
         
-        return AnswerResponse(
-            answer=answer,
-            sources=source_ids if source_ids else None
-        )
+        return AnswerResponse(answer=answer)
         
     except MessagesAPIError as e:
         logger.error("Messages API error", error=str(e))
