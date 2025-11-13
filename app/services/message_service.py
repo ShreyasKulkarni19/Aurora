@@ -1,7 +1,13 @@
 """Service for fetching and managing messages from the messages API."""
 
 import httpx
-from typing import List
+import asyncio
+import json
+import os
+from pathlib import Path
+from typing import List, Optional
+from datetime import datetime, timedelta
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from app.models import Message, MessagesResponse
 from app.config import settings
 from app.utils.exceptions import MessagesAPIError
@@ -9,199 +15,247 @@ from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Persistent cache file path
+CACHE_DIR = Path(".cache")
+CACHE_FILE = CACHE_DIR / "messages_cache.json"
+
 
 class MessageService:
     """Service for interacting with the messages API."""
     
     def __init__(self):
-        # Keep the URL as configured - the API requires the trailing slash
-        self.api_url = settings.messages_api_url
+        # Normalize URL - remove trailing slash
+        self.api_url = settings.messages_api_url.rstrip('/')
         self.timeout = settings.messages_api_timeout
         self.page_size = settings.messages_page_size
+        self.request_delay = settings.messages_request_delay
         
-        # Configure client to follow redirects and set proper headers
-        # httpx 0.25.2 supports follow_redirects parameter
-        # Use try-except for compatibility with different httpx versions
-        try:
-            self.client = httpx.AsyncClient(
-                timeout=self.timeout,
-                follow_redirects=True,  # Follow redirects (307, 301, etc.) - required for this API
-                headers={
-                    "Accept": "application/json",
-                    "User-Agent": "Aurora-QA-Service/1.0"
-                }
-            )
-        except TypeError:
-            # Fallback for older httpx versions that don't support follow_redirects
-            # In this case, redirects will be handled manually if needed
-            logger.warning("httpx version doesn't support follow_redirects, using default client")
-            self.client = httpx.AsyncClient(
-                timeout=self.timeout,
-                headers={
-                    "Accept": "application/json",
-                    "User-Agent": "Aurora-QA-Service/1.0"
-                }
-            )
+        # Cache for messages to avoid fetching on every request
+        self._cached_messages: Optional[List[Message]] = None
+        self._cache_timestamp: Optional[datetime] = None
+        self._cache_ttl = timedelta(minutes=5)  # Cache for 5 minutes
+        
+        # Load cache from disk if available
+        self._load_cache_from_disk()
+        
+        # Configure client with connection limits and proper headers
+        self.client = httpx.AsyncClient(
+            timeout=self.timeout,
+            follow_redirects=True,
+            limits=httpx.Limits(
+                max_keepalive_connections=5,
+                max_connections=10,
+                keepalive_expiry=30.0
+            ),
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "Aurora-QA-Service/1.0"
+            }
+        )
     
-    async def fetch_all_messages(self) -> List[Message]:
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.RequestError)),
+        reraise=True
+    )
+    async def _fetch_page(self, skip: int, limit: int) -> MessagesResponse:
+        """
+        Fetch a single page of messages with retry logic.
+        
+        Args:
+            skip: Number of messages to skip
+            limit: Number of messages to fetch
+            
+        Returns:
+            MessagesResponse object
+        """
+        params = {
+            "skip": skip,
+            "limit": limit
+        }
+        
+        logger.debug(f"Fetching page: skip={skip}, limit={limit}")
+        
+        try:
+            response = await self.client.get(self.api_url, params=params)
+            
+            # Log response for debugging
+            logger.debug(
+                "API response",
+                status_code=response.status_code,
+                url=str(response.url)
+            )
+            
+            # Check for client errors (4xx) - some might be retryable
+            if response.status_code in (400, 401, 402, 403):
+                error_text = response.text[:500]
+                logger.warning(
+                    f"Received {response.status_code} error, will retry",
+                    url=str(response.url),
+                    error_text=error_text
+                )
+                # Raise HTTPStatusError to trigger retry
+                response.raise_for_status()
+            
+            # Ensure status is OK (for non-4xx errors)
+            if response.status_code != 200:
+                response.raise_for_status()
+            data = response.json()
+            return MessagesResponse(**data)
+            
+        except httpx.HTTPStatusError as e:
+            # Log the error but let retry decorator handle it
+            status_code = e.response.status_code if e.response else "unknown"
+            logger.warning(
+                f"HTTP error {status_code} on attempt, will retry",
+                url=str(e.request.url) if hasattr(e, 'request') and hasattr(e.request, 'url') else self.api_url
+            )
+            raise
+        except httpx.RequestError as e:
+            logger.warning(f"Request error, will retry: {str(e)}")
+            raise
+    
+    def _load_cache_from_disk(self) -> None:
+        """Load cached messages from disk if available and valid."""
+        try:
+            if CACHE_FILE.exists():
+                with open(CACHE_FILE, 'r', encoding='utf-8') as f:
+                    cache_data = json.load(f)
+                
+                cache_timestamp = datetime.fromisoformat(cache_data['timestamp'])
+                cache_age = datetime.now() - cache_timestamp
+                
+                if cache_age < self._cache_ttl:
+                    # Load messages from cache
+                    messages_data = cache_data['messages']
+                    self._cached_messages = [Message(**msg) for msg in messages_data]
+                    self._cache_timestamp = cache_timestamp
+                    logger.info(
+                        f"Loaded {len(self._cached_messages)} messages from cache "
+                        f"(age: {cache_age.total_seconds():.0f}s)"
+                    )
+                else:
+                    logger.debug(f"Cache expired (age: {cache_age.total_seconds():.0f}s)")
+        except Exception as e:
+            logger.warning(f"Failed to load cache from disk: {e}")
+            self._cached_messages = None
+            self._cache_timestamp = None
+    
+    def _save_cache_to_disk(self, messages: List[Message]) -> None:
+        """Save cached messages to disk for persistence across runs."""
+        try:
+            # Create cache directory if it doesn't exist
+            CACHE_DIR.mkdir(exist_ok=True)
+            
+            cache_data = {
+                'timestamp': datetime.now().isoformat(),
+                'messages': [msg.model_dump() for msg in messages]
+            }
+            
+            with open(CACHE_FILE, 'w', encoding='utf-8') as f:
+                json.dump(cache_data, f, indent=2)
+            
+            logger.debug(f"Saved {len(messages)} messages to disk cache")
+        except Exception as e:
+            logger.warning(f"Failed to save cache to disk: {e}")
+    
+    def _is_cache_valid(self) -> bool:
+        """Check if cached messages are still valid."""
+        if self._cached_messages is None or self._cache_timestamp is None:
+            return False
+        return datetime.now() - self._cache_timestamp < self._cache_ttl
+    
+    async def fetch_all_messages(self, force_refresh: bool = False) -> List[Message]:
         """
         Fetch all messages from the messages API with pagination support.
+        Includes delays between requests to avoid rate limiting.
+        Messages are cached for 5 minutes to improve performance.
         
+        Args:
+            force_refresh: If True, bypass cache and fetch fresh data
+            
         Returns:
             List of Message objects
             
         Raises:
             MessagesAPIError: If the API request fails
         """
+        # Check cache first
+        if not force_refresh and self._is_cache_valid():
+            logger.info(f"Using cached messages ({len(self._cached_messages)} messages)")
+            return self._cached_messages
+        
         all_messages = []
         skip = 0
         total_messages = None
         
         try:
-            logger.info("Fetching messages from API", url=self.api_url)
+            logger.info(f"Fetching messages from API: {self.api_url}")
             
             while True:
-                # Fetch a page of messages
-                params = {
-                    "skip": skip,
-                    "limit": self.page_size
-                }
-                
-                logger.debug(
-                    "Fetching messages page",
-                    skip=skip,
-                    limit=self.page_size
-                )
-                
-                # Make request - handle redirects manually if follow_redirects didn't work
-                max_redirects = 5
-                redirect_count = 0
-                current_url = self.api_url
-                current_params = params.copy()  # Preserve original params
-                response = None
-                
-                while redirect_count < max_redirects:
-                    logger.info(f"Making request to: {current_url} with params: {current_params}")
-                    response = await self.client.get(current_url, params=current_params)
-                    
-                    # Log response details for debugging
-                    logger.info(
-                        "API response received",
-                        status_code=response.status_code,
-                        url=str(response.url),
-                        headers=dict(response.headers)
-                    )
-                    
-                    # Handle redirects manually if client didn't follow them
-                    if response.status_code in (301, 302, 307, 308):
-                        redirect_count += 1
-                        location = response.headers.get("Location")
-                        if location:
-                            logger.info(f"Following redirect {redirect_count}/{max_redirects} to: {location}")
-                            # Handle relative redirects
-                            if location.startswith('/'):
-                                from urllib.parse import urljoin
-                                location = urljoin(str(response.url), location)
-                            current_url = location
-                            # Keep params for redirect (query parameters should be preserved)
-                            continue
-                        else:
-                            raise MessagesAPIError("Redirect response without Location header")
-                    
-                    # Check status and raise error with details if not successful
-                    if response.status_code != 200:
-                        error_text = response.text[:500]  # Limit error text length
-                        logger.error(
-                            "API returned error status",
-                            status_code=response.status_code,
-                            url=str(response.url),
-                            error_text=error_text,
-                            response_headers=dict(response.headers)
-                        )
-                        
-                        # Special handling for payment/quota errors
-                        if response.status_code == 402:
-                            raise MessagesAPIError(
-                                f"Payment required (HTTP 402): The messages API requires payment or has reached quota limits. Response: {error_text}"
-                            )
-                        elif response.status_code == 429:
-                            raise MessagesAPIError(
-                                f"Rate limit exceeded (HTTP 429): The messages API is rate limiting requests. Response: {error_text}"
-                            )
-                        else:
-                            raise MessagesAPIError(
-                                f"HTTP {response.status_code}: {error_text}"
-                            )
-                    
-                    # Success - break out of redirect loop
-                    break
-                
-                if redirect_count >= max_redirects:
-                    raise MessagesAPIError(f"Too many redirects (>{max_redirects})")
-                
-                if response is None:
-                    raise MessagesAPIError("No response received from API")
-                
-                data = response.json()
-                
-                # Parse response as PaginatedMessages
-                messages_response = MessagesResponse(**data)
+                # Fetch page with retry logic
+                messages_response = await self._fetch_page(skip, self.page_size)
                 
                 # Set total on first request
                 if total_messages is None:
                     total_messages = messages_response.total
-                    logger.info(
-                        "Total messages available",
-                        total=total_messages
-                    )
+                    logger.info(f"Total messages available: {total_messages}")
                 
                 # Add messages from this page
                 all_messages.extend(messages_response.items)
                 
+                # Log progress every 10 pages to show activity
+                page_num = (skip // self.page_size) + 1
+                if page_num % 10 == 0 or len(all_messages) >= total_messages:
+                    logger.info(
+                        f"Progress: {len(all_messages)}/{total_messages} messages fetched "
+                        f"(page {page_num})"
+                    )
+                
                 logger.debug(
-                    "Fetched messages page",
-                    page_messages=len(messages_response.items),
-                    total_fetched=len(all_messages),
-                    total_available=total_messages
+                    f"Fetched {len(messages_response.items)} messages, "
+                    f"total: {len(all_messages)}/{total_messages}"
                 )
                 
                 # Check if we've fetched all messages
-                if len(all_messages) >= total_messages:
-                    break
-                
-                # Check if this was the last page (fewer messages than page size)
-                if len(messages_response.items) < self.page_size:
+                if len(all_messages) >= total_messages or len(messages_response.items) < self.page_size:
                     break
                 
                 # Move to next page
                 skip += self.page_size
+                
+                # Add delay between requests to avoid rate limiting
+                # Small delay: 0.1-0.3 seconds between requests
+                if self.request_delay > 0:
+                    await asyncio.sleep(self.request_delay)
             
-            logger.info(
-                "Successfully fetched all messages",
-                count=len(all_messages),
-                total=total_messages
-            )
+            logger.info(f"Successfully fetched {len(all_messages)} messages")
+            
+            # Update in-memory cache
+            self._cached_messages = all_messages
+            self._cache_timestamp = datetime.now()
+            
+            # Save to disk for persistence across runs
+            self._save_cache_to_disk(all_messages)
+            
             return all_messages
             
         except httpx.HTTPStatusError as e:
+            error_text = e.response.text[:500] if e.response else "No response"
+            status_code = e.response.status_code if e.response else "unknown"
             logger.error(
-                "HTTP error fetching messages",
-                status_code=e.response.status_code,
-                error=str(e)
+                f"HTTP error fetching messages: {status_code} - {error_text}",
+                status_code=status_code,
+                url=str(e.request.url) if hasattr(e, 'request') and hasattr(e.request, 'url') else self.api_url
             )
-            raise MessagesAPIError(
-                f"HTTP {e.response.status_code}: {e.response.text}"
-            )
+            raise MessagesAPIError(f"HTTP {status_code}: {error_text}")
         except httpx.RequestError as e:
-            logger.error(
-                "Request error fetching messages",
-                error=str(e)
-            )
+            logger.error(f"Request error fetching messages: {e}")
             raise MessagesAPIError(f"Request failed: {str(e)}")
         except Exception as e:
             logger.error(
-                "Unexpected error fetching messages",
-                error=str(e),
+                f"Unexpected error fetching messages: {e}",
                 error_type=type(e).__name__
             )
             raise MessagesAPIError(f"Unexpected error: {str(e)}")
@@ -232,4 +286,3 @@ class MessageService:
     async def close(self):
         """Close the HTTP client."""
         await self.client.aclose()
-

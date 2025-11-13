@@ -1,0 +1,142 @@
+"""Service for fetching and managing messages from the messages API."""
+
+import httpx
+from typing import List
+from app.models import Message, MessagesResponse
+from app.config import settings
+from app.utils.exceptions import MessagesAPIError
+from app.utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+
+class MessageService:
+    """Service for interacting with the messages API."""
+    
+    def __init__(self):
+        self.api_url = settings.messages_api_url
+        self.timeout = settings.messages_api_timeout
+        self.page_size = settings.messages_page_size
+        
+        self.client = httpx.AsyncClient(
+            timeout=self.timeout,
+            follow_redirects=True,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "Aurora-QA-Service/1.0"
+            }
+        )
+    
+    async def fetch_all_messages(self) -> List[Message]:
+        """
+        Fetch all messages from the messages API with pagination support.
+        
+        Returns:
+            List of Message objects
+            
+        Raises:
+            MessagesAPIError: If the API request fails
+        """
+        all_messages = []
+        skip = 0
+        total_messages = None
+        
+        try:
+            logger.info("Fetching messages from API", url=self.api_url)
+            
+            while True:
+                params = {
+                    "skip": skip,
+                    "limit": self.page_size
+                }
+                
+                logger.debug(
+                    "Fetching messages page",
+                    skip=skip,
+                    limit=self.page_size
+                )
+                
+                response = await self.client.get(self.api_url, params=params)
+                response.raise_for_status()
+                
+                data = response.json()
+                messages_response = MessagesResponse(**data)
+                
+                # Set total on first request
+                if total_messages is None:
+                    total_messages = messages_response.total
+                    logger.info("Total messages available", total=total_messages)
+                
+                # Add messages from this page
+                all_messages.extend(messages_response.items)
+                
+                logger.debug(
+                    "Fetched messages page",
+                    page_messages=len(messages_response.items),
+                    total_fetched=len(all_messages),
+                    total_available=total_messages
+                )
+                
+                # Check if we've fetched all messages
+                if len(all_messages) >= total_messages:
+                    break
+                
+                # Check if this was the last page
+                if len(messages_response.items) < self.page_size:
+                    break
+                
+                # Move to next page
+                skip += self.page_size
+            
+            logger.info(
+                "Successfully fetched all messages",
+                count=len(all_messages),
+                total=total_messages
+            )
+            return all_messages
+            
+        except httpx.HTTPStatusError as e:
+            logger.error(
+                "HTTP error fetching messages",
+                status_code=e.response.status_code,
+                error=str(e)
+            )
+            raise MessagesAPIError(
+                f"HTTP {e.response.status_code}: {e.response.text}"
+            )
+        except httpx.RequestError as e:
+            logger.error("Request error fetching messages", error=str(e))
+            raise MessagesAPIError(f"Request failed: {str(e)}")
+        except Exception as e:
+            logger.error(
+                "Unexpected error fetching messages",
+                error=str(e),
+                error_type=type(e).__name__
+            )
+            raise MessagesAPIError(f"Unexpected error: {str(e)}")
+    
+    def format_message_text(self, message: Message) -> str:
+        """
+        Format a message into a searchable text string.
+        
+        Args:
+            message: Message object to format
+            
+        Returns:
+            Formatted text string
+        """
+        parts = []
+        
+        if message.user_name:
+            parts.append(f"From: {message.user_name}")
+        if message.message:
+            parts.append(f"Message: {message.message}")
+        if message.timestamp:
+            parts.append(f"Time: {message.timestamp}")
+        
+        return " | ".join(parts)
+    
+    async def close(self):
+        """Close the HTTP client."""
+        await self.client.aclose()
+

@@ -32,7 +32,9 @@ class QAService:
             logger.info("Processing question", question=question)
             
             # Step 1: Fetch all messages
+            logger.info("Step 1/4: Fetching messages from API...")
             messages = await self.message_service.fetch_all_messages()
+            logger.info(f"Step 1/4: Fetched {len(messages)} messages")
             
             if not messages:
                 logger.warning("No messages found")
@@ -42,17 +44,20 @@ class QAService:
                 )
             
             # Step 2: Format messages for embedding
+            logger.info("Step 2/4: Formatting messages for embedding...")
             message_texts = [
                 self.message_service.format_message_text(msg)
                 for msg in messages
             ]
             
             # Step 3: Retrieve relevant messages using semantic search
+            logger.info("Step 3/4: Finding relevant messages using semantic search...")
             relevant_messages = self.embedding_service.retrieve_relevant_messages(
                 question=question,
                 messages=messages,
                 message_texts=message_texts
             )
+            logger.info(f"Step 3/4: Found {len(relevant_messages)} relevant messages")
             
             if not relevant_messages:
                 logger.warning("No relevant messages found")
@@ -62,10 +67,12 @@ class QAService:
                 )
             
             # Step 4: Generate answer using LLM
+            logger.info("Step 4/4: Generating answer using LLM...")
             answer = await self.llm_service.generate_answer(
                 question=question,
                 relevant_messages=relevant_messages
             )
+            logger.info("Step 4/4: Answer generated successfully")
             
             # Step 5: Extract source message IDs
             source_ids = [

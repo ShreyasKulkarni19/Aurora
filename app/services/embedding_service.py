@@ -122,15 +122,19 @@ class EmbeddingService:
             )
             
             # Generate query embedding
+            logger.info("Generating query embedding...")
             query_embedding = self.generate_embedding(question)
             
             # Generate embeddings for all messages
+            logger.info(f"Generating embeddings for {len(message_texts)} messages (this may take a moment)...")
             message_embeddings = self.model.encode(
                 message_texts,
                 convert_to_numpy=True,
                 normalize_embeddings=True,
-                show_progress_bar=False
+                show_progress_bar=True,  # Show progress bar for long operations
+                batch_size=32  # Process in batches for better performance
             )
+            logger.info("Embeddings generated successfully")
             
             # Compute similarities
             similarities = self.compute_similarity(

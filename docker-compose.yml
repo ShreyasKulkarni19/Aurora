@@ -7,14 +7,16 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - MESSAGES_API_URL=${MESSAGES_API_URL:-https://november7-730026606190.europe-west1.run.app/messages/}
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - MESSAGES_API_URL=${MESSAGES_API_URL}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
       - LLM_PROVIDER=${LLM_PROVIDER:-openai}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4-turbo-preview}
+      - OPENAI_TEMPERATURE=${OPENAI_TEMPERATURE:-0.1}
+      - OPENAI_MAX_TOKENS=${OPENAI_MAX_TOKENS:-200}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-all-MiniLM-L6-v2}
+      - EMBEDDING_DEVICE=${EMBEDDING_DEVICE:-cpu}
       - TOP_K_MESSAGES=${TOP_K_MESSAGES:-5}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
-    volumes:
-      - ./app:/app/app
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]

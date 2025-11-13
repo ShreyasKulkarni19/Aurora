@@ -28,6 +28,10 @@ class Settings(BaseSettings):
         default=100,
         description="Number of messages to fetch per page (API default is 100)"
     )
+    messages_request_delay: float = Field(
+        default=0.3,
+        description="Delay in seconds between paginated requests to avoid rate limiting"
+    )
     
     # Embedding Configuration
     embedding_model: str = Field(

@@ -66,9 +66,12 @@ class LLMService:
             "",
             "Instructions:",
             "1. Extract the specific answer from the messages above.",
-            "2. If the answer is not found, respond with 'I could not find an answer to this question in the available messages.'",
-            "3. Be concise and direct. Only provide the answer, no additional explanation.",
-            "4. Return your response as a JSON object with a single 'answer' field.",
+            "2. If multiple answers exist, provide the most relevant or primary answer only.",
+            "3. If the answer is not found, respond with 'I could not find an answer to this question in the available messages.'",
+            "4. Be concise and direct. Provide ONE definitive answer as a string, not a list.",
+            "5. Return your response as a JSON object with a single 'answer' field containing a string value.",
+            "",
+            "Example format: {\"answer\": \"Sophia Al-Farsi\"}",
             "",
             "Response (JSON only):"
         ])
@@ -90,7 +93,8 @@ class LLMService:
     
     @retry(
         stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=10)
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        reraise=True
     )
     async def generate_answer(
         self,
@@ -153,6 +157,14 @@ class LLMService:
                 try:
                     answer_data = json.loads(answer_text)
                     answer = answer_data.get("answer", answer_text)
+                    
+                    # Ensure answer is a string, not a list or other type
+                    if isinstance(answer, list):
+                        # Convert list to comma-separated string
+                        answer = ", ".join(str(item) for item in answer)
+                    elif not isinstance(answer, str):
+                        answer = str(answer)
+                        
                 except json.JSONDecodeError:
                     # If JSON parsing fails, try to extract answer from text
                     # Sometimes LLM returns answer without JSON wrapper
@@ -170,6 +182,14 @@ class LLMService:
                     try:
                         answer_data = json.loads(cleaned_text)
                         answer = answer_data.get("answer", cleaned_text)
+                        
+                        # Ensure answer is a string, not a list or other type
+                        if isinstance(answer, list):
+                            # Convert list to comma-separated string
+                            answer = ", ".join(str(item) for item in answer)
+                        elif not isinstance(answer, str):
+                            answer = str(answer)
+                            
                     except json.JSONDecodeError:
                         # If still can't parse, use the raw response
                         logger.warning("Failed to parse LLM response as JSON, using raw text")
