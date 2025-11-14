@@ -10,7 +10,8 @@ RUN apt-get update && apt-get install -y \
 
 # Install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir --user -r requirements.txt
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir --user -r requirements.txt
 
 # Final stage
 FROM python:3.11-slim
