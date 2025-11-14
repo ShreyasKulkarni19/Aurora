@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     api_version: str = "1.0.0"
     api_prefix: str = "/api/v1"
     host: str = "0.0.0.0"
-    port: int = 8000
+    port: int = 10000
     
     # Messages API Configuration
     messages_api_url: str = Field(
@@ -121,6 +121,8 @@ class Settings(BaseSettings):
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = False
+        # Don't fail if .env file doesn't exist
+        env_ignore_empty = True
 
 
 settings = Settings()

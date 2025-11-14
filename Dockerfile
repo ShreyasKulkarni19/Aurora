@@ -25,14 +25,13 @@ COPY --from=builder /root/.local /root/.local
 
 # Copy application code
 COPY app/ ./app/
-COPY .env .env
 COPY run.py .
 
 # Make sure scripts in .local are usable
 ENV PATH=/root/.local/bin:$PATH
 
 # Expose port
-EXPOSE 8000
+EXPOSE 10000
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
